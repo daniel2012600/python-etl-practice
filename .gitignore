@@ -1,0 +1,13 @@
+# 作業系統檔案
+.DS_Store
+Thumbs.db
+
+# 編輯器設定
+.vscode/
+.idea/
+
+# 依專案環境調整（例如 Node.js）
+node_modules/
+dist/
+build/
+.env
