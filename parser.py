@@ -29,7 +29,7 @@ def main() -> None:
 
     success_count = 0
     failure_count = 0
-
+    failed_posts = []
     for index, post in enumerate(posts, start=1):
         reasons = validate_post(post)
         if not reasons:
@@ -38,9 +38,24 @@ def main() -> None:
             post_id = post.get("id") if isinstance(post, dict) else None
             print(f"第 {index} 筆失敗，id={post_id!r}：{'；'.join(reasons)}")
             failure_count += 1
+            failed_posts.append({
+                "row_number": index,
+                "raw_data": post,
+                "reasons": reasons,
+            })
+
+            output_dir = Path(__file__).parent / "output"
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            output_file = output_dir / "failed_posts.json"
+            output_file.write_text(
+                json.dumps(failed_posts, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+
     print(f"成功：{success_count}")
     print(f"失敗：{failure_count}")
-
-
+    print(f"失敗資料已保存：{output_file}")
 if __name__ == "__main__":
     main()
