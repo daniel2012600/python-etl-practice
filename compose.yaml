@@ -1,8 +1,28 @@
 services:
   parser:
-    image: python:3.12-slim
+    build: .
+    image: etl-practice:dev
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_NAME: etl_practice
+      DB_USER: etl
+      DB_PASSWORD: ${MYSQL_PASSWORD:?請在 .env 設定密碼}
     working_dir: /app
     volumes:
       - .:/app:ro
       - ./output:/app/output
     command: ["python", "parser.py"]
+
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?請在 .env 設定密碼}
+      MYSQL_DATABASE: etl_practice
+      MYSQL_USER: etl
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?請在 .env 設定密碼}
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+volumes:
+  mysql_data:

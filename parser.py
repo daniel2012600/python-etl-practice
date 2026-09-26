@@ -44,18 +44,21 @@ def main() -> None:
                 "reasons": reasons,
             })
 
-            output_dir = Path(__file__).parent / "output"
-            output_dir.mkdir(parents=True, exist_ok=True)
+    # 全部資料驗證完後，只寫一次
+    output_dir = Path(__file__).parent / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-            output_file = output_dir / "failed_posts.json"
-            output_file.write_text(
-                json.dumps(failed_posts, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+    output_file = output_dir / "failed_posts.json"
+    output_file.write_text(
+        json.dumps(failed_posts, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
     print(f"成功：{success_count}")
     print(f"失敗：{failure_count}")
     print(f"失敗資料已保存：{output_file}")
+
+    
 if __name__ == "__main__":
     main()
