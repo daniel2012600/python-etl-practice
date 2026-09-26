@@ -17,7 +17,6 @@ def main() -> None:
         password=os.environ["DB_PASSWORD"],
         connection_timeout=5,
     )
-
     try:
         cursor = connection.cursor()
         try:
@@ -27,7 +26,6 @@ def main() -> None:
 
             for index, post in enumerate(posts, start=1):
                 reasons = validate_post(post)
-
                 if reasons:
                     invalid_count += 1
                     failed_posts.append({
@@ -52,6 +50,10 @@ def main() -> None:
             connection.commit()
             print(f"已提交：{valid_count} 筆有效資料")
             print(f"驗證未通過：{invalid_count} 筆")
+        except Exception:
+            connection.rollback()
+            print("交易已回滾")
+            raise
         finally:
             cursor.close()
     finally:
