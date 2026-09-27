@@ -2,6 +2,7 @@ services:
   parser:
     build: .
     image: etl-practice:dev
+    pull_policy: never
     environment:
       DB_HOST: db
       DB_PORT: "3306"
@@ -15,7 +16,8 @@ services:
     command: ["python", "parser.py"]
 
   db:
-    image: mysql:8.4
+    image: mysql:8.4@sha256:0744ee5ef89ce6ccfa13de3e579fe6b9e27f93dd70da9c06d2c908b1b193fb8d
+    pull_policy: missing
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?請在 .env 設定密碼}
       MYSQL_DATABASE: etl_practice
