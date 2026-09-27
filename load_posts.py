@@ -4,10 +4,11 @@ from parser import validate_post
 import os
 from storage import upsert_post
 import mysql.connector
-
+import sys
 
 def main() -> None:
-    source = Path(__file__).with_name("posts.json")
+    filename = sys.argv[1] if len(sys.argv) > 1 else "posts.json"
+    source = Path(__file__).with_name(filename)  
     posts = json.loads(source.read_text(encoding="utf-8"))
     connection = mysql.connector.connect(
         host=os.environ["DB_HOST"],
