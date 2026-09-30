@@ -5,39 +5,72 @@ import os
 from storage import upsert_post
 import mysql.connector
 import sys
+import hashlib
+import time
+
 
 def main() -> None:
-    # 可從命令列指定輸入檔；目前 checkpoint 任務仍寫死為 posts_100_v1，
-    # 續跑演練只使用內容與順序固定的 posts_100.json，尚未支援任意來源切換。
-    filename = sys.argv[1] if len(sys.argv) > 1 else "posts.json"
-    source = Path(__file__).with_name(filename)  
-    posts = json.loads(source.read_text(encoding="utf-8"))
-    connection = mysql.connector.connect(
-        host=os.environ["DB_HOST"],
-        port=int(os.environ["DB_PORT"]),
-        database=os.environ["DB_NAME"],
-        user=os.environ["DB_USER"],
-        password=os.environ["DB_PASSWORD"],
-        connection_timeout=5,
-    )
+    # 在讀檔與連線前檢查來源，避免其他檔案誤用既有任務的進度。
+    # 此處先檢查檔名；下方讀取任務後，再比對來源內容指紋。
+    filename = sys.argv[1] if len(sys.argv) > 1 else "posts_100.json"
+    if filename != "posts_100.json":
+        raise ValueError("任務 posts_100_v1 只允許來源 posts_100.json")
+
+    source = Path(__file__).with_name(filename)
+    # 只讀一次，確保指紋與解析使用的是同一份內容。
+    source_bytes = source.read_bytes()
+    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+    posts = json.loads(source_bytes.decode("utf-8"))
+    # 只重試建立連線；此時尚未執行資料寫入。
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            connection = mysql.connector.connect(
+                host=os.environ["DB_HOST"],
+                port=int(os.environ["DB_PORT"]),
+                database=os.environ["DB_NAME"],
+                user=os.environ["DB_USER"],
+                password=os.environ["DB_PASSWORD"],
+                connection_timeout=5,
+            )
+            break  # 連線成功，離開重試迴圈。
+        except mysql.connector.Error as exc:
+            # 非指定錯誤立即停止，不把所有錯誤都當成暫時故障。
+            if exc.errno != 2003:
+                raise
+
+            print(f"連線失敗：第 {attempt}/{max_attempts} 次，錯誤碼 {exc.errno}")
+            if attempt == max_attempts:
+                raise  # 次數用完，保留失敗訊號。
+
+            print("等待 2 秒後重試")
+            time.sleep(2)
     try:
         cursor = connection.cursor()
         try:
             # 1. 讀取「已成功提交的來源列號」，不是上次讀到的位置或入庫筆數。
             cursor.execute(
-                "SELECT last_row_number FROM etl_checkpoints WHERE job_name = %s",
+                "SELECT last_row_number, source_sha256 FROM etl_checkpoints WHERE job_name = %s",
                 ("posts_100_v1",),
             )
             checkpoint = cursor.fetchone()
             if checkpoint is None:
                 raise RuntimeError("找不到任務的 checkpoint")
+            last_row_number, saved_sha256 = checkpoint
 
-            last_row_number = checkpoint[0]
+            # 必須先確認來源版本，才能使用進度或判定已完成。
+            if saved_sha256 is None:
+                raise RuntimeError("任務尚未綁定來源指紋，拒絕執行")
+            if source_sha256 != saved_sha256:
+                raise RuntimeError("來源指紋不一致，拒絕沿用既有進度")
+
+            print("來源指紋驗證通過")
+
+
             print(f"已提交的來源進度：{last_row_number}")
-            # 已完成就跳過；目前也會跳過下方報告匯出，補產生報告的能力尚未加入。
+            # 入庫完成仍需匯出報告；下方迴圈會略過已提交的來源列。
             if last_row_number == len(posts):
-                print("此來源已處理完成，跳過本次執行")
-                return
+                print("此來源已完成入庫，本次僅重新匯出報告")
             # 計數只涵蓋本次處理的資料，不包含 checkpoint 之前已完成的部分。
             valid_count = 0
             invalid_count = 0
@@ -122,17 +155,18 @@ def main() -> None:
             # JSON 是資料庫紀錄的匯出報告，不在 MySQL 交易內。
             # 若寫檔失敗，前面已提交的批次仍保留，rollback 無法撤銷它們。
             output_file = output_dir / "failed_posts.json"
+
             output_file.write_text(
                 json.dumps(failed_posts, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
 
-            print(f"已提交：{valid_count} 筆有效資料")
-            print(f"驗證未通過：{invalid_count} 筆")
+            print(f"本次處理：有效 {valid_count} 筆，無效 {invalid_count} 筆")
+            print(f"已匯出任務完整失敗報告：{len(failed_posts)} 筆")
         except Exception:
             # 6. 只回滾目前尚未提交的交易；之前成功提交的批次與進度不會被撤銷。
             connection.rollback()
-            print("交易已回滾")
+            print("執行失敗，已回滾目前未提交的交易；先前已提交的資料與進度仍保留")
             # 將錯誤傳給呼叫端，避免入庫或報告失敗卻以成功狀態結束。
             raise
         finally:
