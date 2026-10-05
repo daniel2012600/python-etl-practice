@@ -10,48 +10,35 @@ import time
 
 
 def main() -> None:
+    # 未指定時沿用原任務；測試時可透過環境變數切換。
+    job_name = os.environ.get("ETL_JOB_NAME", "posts_100_v1")
+    print(f"執行任務：{job_name}")
     # 在讀檔與連線前檢查來源，避免其他檔案誤用既有任務的進度。
     # 此處先檢查檔名；下方讀取任務後，再比對來源內容指紋。
     filename = sys.argv[1] if len(sys.argv) > 1 else "posts_100.json"
     if filename != "posts_100.json":
-        raise ValueError("任務 posts_100_v1 只允許來源 posts_100.json")
-
+        raise ValueError(f"任務 {job_name} 只允許來源 posts_100.json")
     source = Path(__file__).with_name(filename)
     # 只讀一次，確保指紋與解析使用的是同一份內容。
     source_bytes = source.read_bytes()
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     posts = json.loads(source_bytes.decode("utf-8"))
-    # 只重試建立連線；此時尚未執行資料寫入。
-    max_attempts = 3
-    for attempt in range(1, max_attempts + 1):
-        try:
-            connection = mysql.connector.connect(
-                host=os.environ["DB_HOST"],
-                port=int(os.environ["DB_PORT"]),
-                database=os.environ["DB_NAME"],
-                user=os.environ["DB_USER"],
-                password=os.environ["DB_PASSWORD"],
-                connection_timeout=5,
-            )
-            break  # 連線成功，離開重試迴圈。
-        except mysql.connector.Error as exc:
-            # 非指定錯誤立即停止，不把所有錯誤都當成暫時故障。
-            if exc.errno != 2003:
-                raise
-
-            print(f"連線失敗：第 {attempt}/{max_attempts} 次，錯誤碼 {exc.errno}")
-            if attempt == max_attempts:
-                raise  # 次數用完，保留失敗訊號。
-
-            print("等待 2 秒後重試")
-            time.sleep(2)
+    # 每次任務嘗試建立新連線；重試次數由外層統一控制。
+    connection = mysql.connector.connect(
+        host=os.environ["DB_HOST"],
+        port=int(os.environ["DB_PORT"]),
+        database=os.environ["DB_NAME"],
+        user=os.environ["DB_USER"],
+        password=os.environ["DB_PASSWORD"],
+        connection_timeout=5,
+    )
     try:
         cursor = connection.cursor()
         try:
             # 1. 讀取「已成功提交的來源列號」，不是上次讀到的位置或入庫筆數。
             cursor.execute(
                 "SELECT last_row_number, source_sha256 FROM etl_checkpoints WHERE job_name = %s",
-                ("posts_100_v1",),
+                (job_name,),
             )
             checkpoint = cursor.fetchone()
             if checkpoint is None:
@@ -102,7 +89,7 @@ def main() -> None:
                             reasons = incoming.reasons
                         """,
                         (
-                            "posts_100_v1",
+                            job_name,
                             index,
                             json.dumps(post, ensure_ascii=False),
                             json.dumps(reasons, ensure_ascii=False),
@@ -123,7 +110,7 @@ def main() -> None:
                         SET last_row_number = %s
                         WHERE job_name = %s
                         """,
-                        (index, "posts_100_v1"),
+                        (index, job_name),
                     )
                     connection.commit()
                     print(f"已提交至來源第 {index} 列")
@@ -137,7 +124,7 @@ def main() -> None:
                 WHERE job_name = %s
                 ORDER BY source_row_number
                 """,
-                ("posts_100_v1",),
+                (job_name,),
             )
             # JSON 欄位查回為文字，用 json.loads 還原，避免匯出時重複編碼。
             failed_posts = [
@@ -164,10 +151,19 @@ def main() -> None:
             print(f"本次處理：有效 {valid_count} 筆，無效 {invalid_count} 筆")
             print(f"已匯出任務完整失敗報告：{len(failed_posts)} 筆")
         except Exception:
-            # 6. 只回滾目前尚未提交的交易；之前成功提交的批次與進度不會被撤銷。
-            connection.rollback()
-            print("執行失敗，已回滾目前未提交的交易；先前已提交的資料與進度仍保留")
-            # 將錯誤傳給呼叫端，避免入庫或報告失敗卻以成功狀態結束。
+            # 連線可能已失效；回滾失敗不能蓋掉最初的錯誤。
+            try:
+                connection.rollback()
+            except Exception as rollback_error:
+                # 清理階段也可能拋出底層驅動錯誤，不能覆蓋原始例外。
+                print(
+                    f"回滾未成功，例外類型：{type(rollback_error).__name__}；"
+                    "保留原始錯誤"
+                )
+            else:
+                print("已回滾目前未提交的交易；先前已提交的資料與進度仍保留")
+
+            # 重新拋出進入外層 except 時的原始錯誤。
             raise
         finally:
             # 關閉游標是釋放資源，本身不代表回滾。
@@ -176,5 +172,25 @@ def main() -> None:
         connection.close()
 
 
+def run_with_retry() -> None:
+    # 最多執行 3 次；每次重新連線、驗證來源並讀取已提交進度。
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            main()
+            return  # 任務成功，停止重試。
+        except mysql.connector.Error as exc:
+            # 目前只處理連不上伺服器，以及執行期間連線中斷。
+            if exc.errno not in (2003, 2013):
+                raise
+
+            print(f"任務失敗：第 {attempt}/{max_attempts} 次，錯誤碼 {exc.errno}")
+            if attempt == max_attempts:
+                raise
+
+            print("等待 2 秒後，重新連線並讀取已提交進度")
+            time.sleep(2)
+
+
 if __name__ == "__main__":
-    main()
+    run_with_retry()
