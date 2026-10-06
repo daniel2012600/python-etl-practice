@@ -7,12 +7,13 @@ import mysql.connector
 import sys
 import hashlib
 import time
-
+import logging
 
 def main() -> None:
     # 未指定時沿用原任務；測試時可透過環境變數切換。
     job_name = os.environ.get("ETL_JOB_NAME", "posts_100_v1")
-    print(f"執行任務：{job_name}")
+    # INFO（一般資訊）記錄正常的任務啟動事件。
+    logging.info("執行任務：%s", job_name)
     # 在讀檔與連線前檢查來源，避免其他檔案誤用既有任務的進度。
     # 此處先檢查檔名；下方讀取任務後，再比對來源內容指紋。
     filename = sys.argv[1] if len(sys.argv) > 1 else "posts_100.json"
@@ -51,13 +52,19 @@ def main() -> None:
             if source_sha256 != saved_sha256:
                 raise RuntimeError("來源指紋不一致，拒絕沿用既有進度")
 
-            print("來源指紋驗證通過")
-
-
-            print(f"已提交的來源進度：{last_row_number}")
+            logging.info("任務：%s，來源指紋驗證通過", job_name)
+            # 記錄資料庫已提交的進度，供續跑時追查。
+            logging.info(
+                "任務：%s，已提交的來源進度：%s",
+                job_name,
+                last_row_number,
+            )
             # 入庫完成仍需匯出報告；下方迴圈會略過已提交的來源列。
             if last_row_number == len(posts):
-                print("此來源已完成入庫，本次僅重新匯出報告")
+                logging.info(
+                    "任務：%s，此來源已完成入庫，本次僅重新匯出報告",
+                    job_name,
+                )
             # 計數只涵蓋本次處理的資料，不包含 checkpoint 之前已完成的部分。
             valid_count = 0
             invalid_count = 0
@@ -113,8 +120,12 @@ def main() -> None:
                         (index, job_name),
                     )
                     connection.commit()
-                    print(f"已提交至來源第 {index} 列")
-
+                    # 提交成功返回後，才記錄已提交的來源進度。
+                    logging.info(
+                        "任務：%s，已提交至來源第 %s 列",
+                        job_name,
+                        index,
+                    )
             # 5. 分批處理結束後，讀取整個任務的失敗紀錄，包含先前執行已提交的部分。
             # 避免續跑時，只用本次的 failed_posts 覆蓋報告而遺失前面批次的紀錄。
             cursor.execute(
@@ -147,22 +158,32 @@ def main() -> None:
                 json.dumps(failed_posts, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-
-            print(f"本次處理：有效 {valid_count} 筆，無效 {invalid_count} 筆")
-            print(f"已匯出任務完整失敗報告：{len(failed_posts)} 筆")
+            # 報告寫入成功後才記錄完成；本次處理量與完整失敗紀錄分開標示。
+            logging.info(
+                "任務：%s，處理與報告匯出完成；"
+                "本次有效 %s 筆，本次無效 %s 筆，任務完整失敗報告 %s 筆",
+                job_name,
+                valid_count,
+                invalid_count,
+                len(failed_posts),
+            )
         except Exception:
             # 連線可能已失效；回滾失敗不能蓋掉最初的錯誤。
             try:
                 connection.rollback()
             except Exception as rollback_error:
-                # 清理階段也可能拋出底層驅動錯誤，不能覆蓋原始例外。
-                print(
-                    f"回滾未成功，例外類型：{type(rollback_error).__name__}；"
-                    "保留原始錯誤"
+                # 記錄清理失敗，但仍由下方 raise 保留原始處理錯誤。
+                logging.error(
+                    "任務：%s，回滾未成功，例外類型：%s；保留原始錯誤",
+                    job_name,
+                    type(rollback_error).__name__,
                 )
             else:
-                print("已回滾目前未提交的交易；先前已提交的資料與進度仍保留")
-
+                logging.warning(
+                    "任務：%s，已回滾目前未提交的交易；"
+                    "先前已提交的資料與進度仍保留",
+                    job_name,
+                )
             # 重新拋出進入外層 except 時的原始錯誤。
             raise
         finally:
@@ -184,13 +205,28 @@ def run_with_retry() -> None:
             if exc.errno not in (2003, 2013):
                 raise
 
-            print(f"任務失敗：第 {attempt}/{max_attempts} 次，錯誤碼 {exc.errno}")
+            job_name = os.environ.get("ETL_JOB_NAME", "posts_100_v1")
             if attempt == max_attempts:
+                logging.error(
+                    "任務：%s，第 %s/%s 次嘗試失敗，錯誤碼 %s；停止重試",
+                    job_name, attempt, max_attempts, exc.errno,
+                )
                 raise
 
-            print("等待 2 秒後，重新連線並讀取已提交進度")
+            logging.warning(
+                "任務：%s，第 %s/%s 次嘗試失敗，錯誤碼 %s；"
+                "等待 2 秒後重新連線並讀取已提交進度",
+                job_name, attempt, max_attempts, exc.errno,
+            )
             time.sleep(2)
 
-
 if __name__ == "__main__":
+    # 統一使用 UTC（協調世界時），避免不同機器的時區造成誤判。
+    logging.Formatter.converter = time.gmtime
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)sZ %(levelname)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+        stream=sys.stdout,
+    )
     run_with_retry()
