@@ -14,12 +14,24 @@ def main() -> None:
     job_name = os.environ.get("ETL_JOB_NAME", "posts_100_v1")
     # INFO（一般資訊）記錄正常的任務啟動事件。
     logging.info("執行任務：%s", job_name)
-    # 在讀檔與連線前檢查來源，避免其他檔案誤用既有任務的進度。
-    # 此處先檢查檔名；下方讀取任務後，再比對來源內容指紋。
-    filename = sys.argv[1] if len(sys.argv) > 1 else "posts_100.json"
-    if filename != "posts_100.json":
-        raise ValueError(f"任務 {job_name} 只允許來源 posts_100.json")
-    source = Path(__file__).with_name(filename)
+    # 每個任務只能處理指定來源，避免拿錯檔案沿用進度。
+    job_sources = {
+        "posts_100_v1": "posts_100.json",
+        "posts_100_retry_test": "posts_100.json",
+        "jsonplaceholder_posts_20261006_v1": (
+            "output/transformed/posts_20261006T125500440782Z.json"
+        ),
+    }
+    if job_name not in job_sources:
+        raise ValueError(f"未設定來源的任務：{job_name}")
+
+    expected_source = job_sources[job_name]
+    filename = sys.argv[1] if len(sys.argv) > 1 else expected_source
+    if filename != expected_source:
+        raise ValueError(f"任務 {job_name} 只允許來源 {expected_source}")
+    # 使用 parent / 路徑，支援 output/transformed 這類子目錄。
+    source = Path(__file__).parent / filename
+
     # 只讀一次，確保指紋與解析使用的是同一份內容。
     source_bytes = source.read_bytes()
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
