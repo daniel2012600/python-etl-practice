@@ -167,8 +167,7 @@ def main() -> None:
 
             # JSON 是資料庫紀錄的匯出報告，不在 MySQL 交易內。
             # 若寫檔失敗，前面已提交的批次仍保留，rollback 無法撤銷它們。
-            output_file = output_dir / "failed_posts.json"
-
+            output_file = output_dir / f"failed_posts_{job_name}.json"
             output_file.write_text(
                 json.dumps(failed_posts, ensure_ascii=False, indent=2),
                 encoding="utf-8",
