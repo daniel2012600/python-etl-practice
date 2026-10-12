@@ -63,7 +63,10 @@ def main() -> None:
                 raise RuntimeError("任務尚未綁定來源指紋，拒絕執行")
             if source_sha256 != saved_sha256:
                 raise RuntimeError("來源指紋不一致，拒絕沿用既有進度")
-
+            if last_row_number > len(posts):
+                raise RuntimeError(
+                    f"checkpoint {last_row_number} 超過來源筆數 {len(posts)}，拒絕執行"
+                )
             logging.info("任務：%s，來源指紋驗證通過", job_name)
             # 記錄資料庫已提交的進度，供續跑時追查。
             logging.info(
