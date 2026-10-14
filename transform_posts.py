@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 from parser import validate_post
+import sys
 
 def transform_post(post: object, row_number: int) -> dict:
     # 只負責單筆轉換與驗證，不讀寫檔案或資料庫。
@@ -47,13 +48,14 @@ def transform_batch(posts: object) -> list[dict]:
     return transformed_posts
 
 def main() -> None:
-    # 讀取已保存的來源，不重新呼叫 API。
-    source = (
-        Path(__file__).parent
-        / "output"
-        / "raw"
-        / "posts_20261006T125500440782Z.json"
-    )
+    if len(sys.argv) != 2:
+        raise SystemExit("用法：python transform_posts.py <raw 檔名>")
+
+    raw_filename = sys.argv[1]
+    if Path(raw_filename).name != raw_filename:
+        raise ValueError("只接受 output/raw 內的檔名")
+
+    source = Path(__file__).parent / "output" / "raw" / raw_filename
     posts = json.loads(source.read_bytes())
     transformed_posts = transform_batch(posts)
 
