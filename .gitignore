@@ -11,3 +11,9 @@ node_modules/
 dist/
 build/
 .env
+
+#產出的失敗資料
+__pycache__/
+*.pyc
+output/
+HANDOFF.md
